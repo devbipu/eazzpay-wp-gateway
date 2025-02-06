@@ -1,0 +1,21 @@
+{
+    "name": "devbipu/eazzpay-wp-gateway",
+    "description": "This is wordpress woocommerce payment plugin for eazzpay",
+    "version": "1.0.0",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Devbipu\\EazzpayWpGateway\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Biplob Shaha",
+            "email": "devbipu@gmail.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=7.4"
+    }
+}
