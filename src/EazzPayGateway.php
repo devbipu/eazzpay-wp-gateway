@@ -37,24 +37,66 @@ class EazzPayGateway extends \WC_Payment_Gateway
    *
    * @var string
    */
-  protected $api_key = '';
+  protected $client_secret = '';
+
+  /**
+   * Success URL
+   *
+   * @var string
+   */
+  protected $success_url;
+
+  /**
+   * Cancel URL
+   *
+   * @var string
+   */
+  protected $cancel_url;
 
   /**
    * Webhook URL
    *
    * @var string
    */
-  protected $webhook_url;
+  protected $ipn_url;
 
   /**
    * Constructor for the gateway.
    */
   public function __construct()
   {
-
-    // Load the settings
+    $this->setup_properties();
     $this->init_form_fields();
     $this->init_settings();
+
+
+    $this->title = (string) $this->get_option('title', __('EazzPay Payment', 'eazzpay'));
+    $this->description = (string) $this->get_option('description', __('Pay securely via Bangladeshi payment methods.', 'eazzpay'));
+    $this->client_secret = (string) $this->get_option('client_secret', '');
+    $this->debug = $this->get_option('debug') === 'yes';
+    $this->api_url = $this->get_option('sandbox') === 'yes' ? 'https://sandbox.eazzpay.com/api/v1' : 'https://pay.eazzpay.com/api/v1';
+
+
+    if ($this->api === null) {
+      APIHandler::$debug = $this->debug;
+      APIHandler::$client_secret = $this->client_secret;
+      APIHandler::$api_url = $this->api_url;
+      $this->api = new APIHandler();
+    }
+
+    // Set default URLs
+    // $this->success_url = add_query_arg('wc-api', 'eazzpay_success', home_url('/'));
+    // $this->cancel_url = add_query_arg('wc-api', 'eazzpay_cancel', home_url('/'));
+    // $this->ipn_url = add_query_arg('wc-api', 'eazzpay_ipn', home_url('/'));
+
+
+    // Hook save settings function
+    add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
+
+    // Hook API handlers
+    add_action('woocommerce_api_eazzpay_success', [$this, 'handle_success']);
+    add_action('woocommerce_api_eazzpay_cancel', [$this, 'handle_cancel']);
+    add_action('woocommerce_api_eazzpay_ipn', [$this, 'handle_ipn']);
   }
 
 
@@ -69,10 +111,16 @@ class EazzPayGateway extends \WC_Payment_Gateway
     $currency = get_woocommerce_currency();
 
     $base_fields = [
+      'sandbox' => [
+        'title' => __('Test Mode', 'eazzpay'),
+        'type' => 'checkbox',
+        'label' => __('Enable Test Mode', 'eazzpay'),
+        'default' => 'no',
+      ],
       'enabled' => [
         'title' => __('Enable/Disable', 'eazzpay'),
         'type' => 'checkbox',
-        'label' => __('Enable UddoktaPay', 'eazzpay'),
+        'label' => __('Enable EazzPay', 'eazzpay'),
         'default' => 'no',
       ],
       'title' => [
@@ -89,10 +137,10 @@ class EazzPayGateway extends \WC_Payment_Gateway
         'default' => __('Pay securely via Bangladeshi payment methods.', 'eazzpay'),
         'desc_tip' => true,
       ],
-      'api_key' => [
-        'title' => __('API Key', 'eazzpay'),
+      'client_secret' => [
+        'title' => __('Client Secret', 'eazzpay'),
         'type' => 'password',
-        'description' => __('Get your API key from UddoktaPay Panel → Brand Settings.', 'eazzpay'),
+        'description' => __('Get your Client Secret key from EazzPay Panel.', 'eazzpay'),
       ],
 
       'physical_product_status' => [
@@ -165,7 +213,7 @@ class EazzPayGateway extends \WC_Payment_Gateway
       esc_url('https://eazzpay.com'),
       __('Sign up for Eazzpay account', 'eazzpay')
     );
-    $this->webhook_url = (string) add_query_arg('wc-api', $this->id, home_url('/'));
+    $this->ipn_url = (string) add_query_arg('wc-api', $this->id, home_url('/'));
     $this->supports = [
       'products',
     ];
@@ -180,10 +228,177 @@ class EazzPayGateway extends \WC_Payment_Gateway
    */
   protected function is_valid_for_use()
   {
-    if (empty($this->api_key) || empty($this->api_url)) {
+    if (empty($this->client_secret) || empty($this->api_url)) {
       $this->add_error(__('Eazzpay requires API Key and API URL to be configured.', 'eazzpay'));
       return false;
     }
     return true;
+  }
+
+
+  public function process_payment($order_id)
+  {
+    //
+
+    // wc_add_notice($this->success_url, 'error');
+    // wc_add_notice($this->cancel_url, 'error');
+    // wc_add_notice($this->ipn_url, 'error');
+    // try {
+    $order = wc_get_order($order_id);
+    if (!$order) {
+      throw new \Exception(__('Invalid order', 'eazzpay'));
+    }
+
+
+    $this->success_url = add_query_arg([
+      'wc-api'   => 'eazzpay_success',
+      'order_id' => $order_id,
+    ], home_url('/'));
+
+    $this->cancel_url = add_query_arg([
+      'wc-api'   => 'eazzpay_cancel',
+      'order_id' => $order_id,
+    ], home_url('/'));
+
+    $this->ipn_url = add_query_arg([
+      'wc-api'   => 'eazzpay_ipn',
+      'order_id' => $order_id,
+    ], home_url('/'));
+
+    $products = [];
+
+    foreach ($order->get_items() as $item_id => $item) {
+      $product_id = $item->get_product_id();
+      $product_name = $item->get_name();
+      $product_variation_id = $item->get_variation_id();
+
+      $products[] = [
+        'id'   => $product_id,
+        'name' => $product_name,
+        'product_variation_id' => $product_variation_id,
+      ];
+    }
+
+    $billing_address = [
+      'address_1'  => $order->get_billing_address_1(),
+      'address_2'  => $order->get_billing_address_2(),
+      'city'       => $order->get_billing_city(),
+      'state'      => $order->get_billing_state(),
+      'postcode'   => $order->get_billing_postcode(),
+      'country'    => $order->get_billing_country(),
+    ];
+
+    $metadata = [
+      'order_id' => $order->get_id(),
+      'email'    => $order->get_billing_email(),
+      'phone'    => $order->get_billing_phone(),
+      'products' => $products,
+      'billing_address' => $billing_address,
+      'redirect_url' => $this->get_return_url($order),
+    ];
+
+    //Request payment init to API
+
+    $response = $this->api->create_payment(
+      $order->get_total(),
+      $order->get_currency(),
+      $order->get_billing_first_name(),
+      $this->success_url,
+      $this->cancel_url,
+      $this->ipn_url,
+      'POST', //IPN Method
+      null, // $metadata,
+      $this->get_option('exchange_rate')
+    );
+
+
+    if (empty($response->data->eazzpay_url)) {
+      throw new \Exception($response->message ?? __('Payment URL not received', 'eazzpay'));
+    }
+
+    // Mark as pending payment
+    $order->update_status(
+      OrderStatus::PENDING,
+      __('Awaiting EazzPay Payment', 'eazzpay')
+    );
+
+    // Empty cart
+    // WC()->cart->empty_cart();
+
+    return [
+      'result' => 'success',
+      'redirect' => $response->data->eazzpay_url,
+    ];
+    // } catch (\Exception $e) {
+    //   throw new \Exception($e->getMessage());
+    // }
+  }
+
+
+  // Handle successful payment
+  public function handle_success()
+  {
+    $order_id = $_GET['order_id'] ?? null;
+    if ($order_id) {
+      $order = wc_get_order($order_id);
+      if ($order) {
+        $order->payment_complete();
+        $order->update_status('completed', __('Payment received', 'woocommerce'));
+        wp_redirect($this->get_return_url($order));
+        exit;
+      }
+    }
+    wp_redirect(home_url());
+    exit;
+  }
+
+  // Handle payment cancellation
+  public function handle_cancel()
+  {
+    $order_id = $_GET['order_id'] ?? null;
+    if ($order_id) {
+      $order = wc_get_order($order_id);
+      if ($order) {
+        $order->update_status('cancelled', __('Payment cancelled', 'woocommerce'));
+        wc_add_notice(__('Payment was cancelled.', 'woocommerce'), 'error');
+        wp_redirect(wc_get_cart_url());
+        exit;
+      }
+    }
+    wp_redirect(home_url());
+    exit;
+  }
+
+  // Handle IPN (Webhook) for order updates
+  public function handle_ipn()
+  {
+    $payload = file_get_contents('php://input');
+    $data = json_decode($payload, true);
+
+    if (!isset($data['reference'])) {
+      status_header(400);
+      echo json_encode(['error' => 'Invalid IPN data']);
+      exit;
+    }
+
+    $order_id = $data['reference'];
+    $status   = $data['status'];
+
+    $order = wc_get_order($order_id);
+    if ($order) {
+      if ($status === 'COMPLETED') {
+        $order->payment_complete();
+        $order->update_status('completed', __('Payment received via EazzPay.', 'woocommerce'));
+      } elseif ($status === 'FAILED') {
+        $order->update_status('failed', __('Payment failed.', 'woocommerce'));
+      } elseif ($status === 'PENDING') {
+        $order->update_status('pending', __('Payment pending.', 'woocommerce'));
+      } elseif ($status === 'CANCELED') {
+        $order->update_status('canceled', __('Payment canceled.', 'woocommerce'));
+      }
+    }
+
+    echo json_encode(['message' => 'IPN processed']);
+    exit;
   }
 }

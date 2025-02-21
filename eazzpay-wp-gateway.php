@@ -27,7 +27,9 @@ define('EAZZPAY_URL', plugin_dir_url(EAZZPAY_FILE));
 
 
 //Autoload composer
-require_once EAZZPAY_PATH . '/vendor/autoload.php';
+require_once EAZZPAY_PATH . 'vendor/autoload.php';
+
+
 
 final class EazzPay_Plugin
 {
@@ -72,8 +74,8 @@ final class EazzPay_Plugin
     printf(
       '<div class="notice notice-warning is-dismissible"><p>%s</p></div>',
       sprintf(
-        esc_html__('%1$s requires %2$s to be installed and activated.', 'uddoktapay-gateway'),
-        '<strong>UddoktaPay Gateway</strong>',
+        esc_html__('%1$s requires %2$s to be installed and activated.', 'eazzpay'),
+        '<strong>Eazzpay Gateway</strong>',
         '<strong>WooCommerce</strong>'
       )
     );
@@ -124,13 +126,7 @@ final class EazzPay_Plugin
         '<a href="%s">%s</a>',
         admin_url('admin.php?page=wc-settings&tab=checkout&section=eazzpay'),
         __('Payment Settings', 'eazzpay')
-      ),
-
-      sprintf(
-        '<a href="%s">%s</a>',
-        'https://www.eazzpay.com',
-        __('<b style="color: green">Purchase License</b>', 'eazzpay')
-      ),
+      )
     ];
 
     return array_merge($links, $plugin_links);

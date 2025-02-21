@@ -22,11 +22,11 @@ class APIHandler
   public static $api_url;
 
   /** @var string API Key */
-  public static $api_key;
+  public static $client_secret;
 
   /** @var array Endpoints */
   private static $endpoints = [
-    'API' => 'payments/execute',
+    'INIT' => 'payments/initiate',
     'VERIFY' => 'verify-payment',
   ];
 
@@ -55,13 +55,16 @@ class APIHandler
    * @param string $type API endpoint type
    * @return object|WP_Error Response object or WP_Error
    */
-  public static function send_request($params = [], $method = 'POST', $type = 'API')
+  public static function send_request($params = [], $method = 'POST', $type = 'INIT')
   {
     try {
       self::validate_credentials();
-
       $url = self::build_api_url($type);
+
       $args = self::prepare_request_args($params, $method);
+
+      wc_add_notice($url, 'error');
+      wc_add_notice(json_encode($params), 'error');
 
       self::log([
         'url' => $url,
@@ -70,6 +73,9 @@ class APIHandler
       ]);
 
       $response = wp_remote_request($url, $args);
+
+
+      wc_add_notice(json_encode($response), 'error');
 
       if (is_wp_error($response)) {
         throw new \Exception($response->get_error_message());
@@ -104,7 +110,7 @@ class APIHandler
    */
   private static function validate_credentials()
   {
-    if (empty(self::$api_url) || empty(self::$api_key)) {
+    if (empty(self::$api_url) || empty(self::$client_secret)) {
       throw new \Exception('API credentials are not configured');
     }
   }
@@ -122,12 +128,6 @@ class APIHandler
     }
 
     $baseURL = rtrim(self::$api_url, '/');
-    $apiSegmentPosition = strpos($baseURL, '/api');
-
-    if ($apiSegmentPosition !== false) {
-      $baseURL = substr($baseURL, 0, $apiSegmentPosition + 4);
-    }
-
     return $baseURL . '/' . self::$endpoints[$type];
   }
 
@@ -144,13 +144,13 @@ class APIHandler
       'method' => $method,
       'timeout' => 45,
       'headers' => [
-        'RT-UDDOKTAPAY-API-KEY' => self::$api_key,
+        'eazzpay-client-secret' => self::$client_secret,
         'Content-Type' => 'application/json',
         'Accept' => 'application/json',
       ],
     ];
 
-    if (in_array($method, ['POST', 'PUT'])) {
+    if (in_array($method, ['POST'])) {
       $args['body'] = wp_json_encode($params);
     }
 
@@ -163,15 +163,16 @@ class APIHandler
    * @param float $amount Amount to charge
    * @param string $currency Currency code
    * @param string $full_name Customer name
-   * @param string $email Customer email
-   * @param array $metadata Additional metadata
-   * @param string $redirect Redirect URL
-   * @param string $cancel Cancel URL
-   * @param string $webhook_url Webhook URL
-   * @param float $exchange_rate Exchange rate
+   * @param array  $metadata Additional metadata
+   * @param string $success_url Redirect URL
+   * @param string $cancel_url Cancel URL
+   * @param string $ipn_url Webhook URL
+   * @param string $ipn_method Webhook METHOD
+   * @param float  $exchange_rate Exchange rate
+   * @param string $base_currency Base currency for conversion
    * @return object Response object
    */
-  public static function create_payment($amount = null, $currency = null, $full_name = null, $email = null, $metadata = null, $redirect = null, $cancel = null, $webhook_url = null, $exchange_rate = 120)
+  public static function create_payment($amount, $currency, $full_name,  $success_url, $cancel_url = null, $ipn_url = null, $ipn_method = 'POST', $metadata = null, $exchange_rate = 120)
   {
     try {
       if (empty($currency)) {
@@ -182,16 +183,16 @@ class APIHandler
         $amount,
         $currency,
         $full_name,
-        $email,
+        $success_url,
+        $cancel_url,
+        $ipn_url,
+        $ipn_method,
         $metadata,
-        $redirect,
-        $cancel,
-        $webhook_url,
         $exchange_rate,
         'BDT'
       );
 
-      return self::send_request($args, 'POST', 'API');
+      return self::send_request($args, 'POST', 'INIT');
     } catch (\Exception $e) {
       self::log($e->getMessage(), 'error');
       return (object) [
@@ -201,49 +202,6 @@ class APIHandler
     }
   }
 
-  /**
-   * Create an international payment
-   *
-   * @param float $amount Amount to charge
-   * @param string $currency Currency code
-   * @param string $full_name Customer name
-   * @param string $email Customer email
-   * @param array $metadata Additional metadata
-   * @param string $redirect Redirect URL
-   * @param string $cancel Cancel URL
-   * @param string $webhook_url Webhook URL
-   * @param float $exchange_rate Exchange rate
-   * @return object Response object
-   */
-  public static function create_payment_international($amount = null, $currency = null, $full_name = null, $email = null, $metadata = null, $redirect = null, $cancel = null, $webhook_url = null, $exchange_rate = 120)
-  {
-    try {
-      if (empty($currency)) {
-        throw new \Exception('Currency is required');
-      }
-
-      $args = self::prepare_payment_args(
-        $amount,
-        $currency,
-        $full_name,
-        $email,
-        $metadata,
-        $redirect,
-        $cancel,
-        $webhook_url,
-        $exchange_rate,
-        'USD'
-      );
-
-      return self::send_request($args, 'POST', 'API_INTERNATIONAL');
-    } catch (\Exception $e) {
-      self::log($e->getMessage(), 'error');
-      return (object) [
-        'success' => false,
-        'message' => $e->getMessage(),
-      ];
-    }
-  }
 
   /**
    * Prepare payment arguments
@@ -251,16 +209,16 @@ class APIHandler
    * @param float $amount Amount to charge
    * @param string $currency Currency code
    * @param string $full_name Customer name
-   * @param string $email Customer email
-   * @param array $metadata Additional metadata
-   * @param string $redirect Redirect URL
-   * @param string $cancel Cancel URL
-   * @param string $webhook_url Webhook URL
-   * @param float $exchange_rate Exchange rate
+   * @param array  $metadata Additional metadata
+   * @param string $success_url Redirect URL
+   * @param string $cancel_url Cancel URL
+   * @param string $ipn_url Webhook URL
+   * @param string $ipn_method Webhook METHOD
+   * @param float  $exchange_rate Exchange rate
    * @param string $base_currency Base currency for conversion
    * @return array Payment arguments
    */
-  private static function prepare_payment_args($amount = null, $currency = null, $full_name = null, $email = null, $metadata = null, $redirect = null, $cancel = null, $webhook_url = null, $exchange_rate = 120, $base_currency)
+  private static function prepare_payment_args($amount, $currency, $full_name,  $success_url, $cancel_url = null, $ipn_url = null, $ipn_method = 'POST', $metadata = null, $exchange_rate = 120, $base_currency = 'BDT')
   {
     $args = [];
 
@@ -273,27 +231,27 @@ class APIHandler
     }
 
     // Set customer information
-    $args['full_name'] = !empty($full_name) ? sanitize_text_field($full_name) : 'Unknown';
-    $args['email'] = !empty($email) ? sanitize_email($email) : 'unknown@gmail.com';
+    $args['cus_name'] = !empty($full_name) ? sanitize_text_field($full_name) : 'Unknown';
+    // $args['email'] = !empty($email) ? sanitize_email($email) : 'unknown@gmail.com';
 
     // Add optional parameters
     if (!is_null($metadata)) {
       $args['metadata'] = $metadata;
     }
 
-    if (!is_null($redirect)) {
-      $args['redirect_url'] = esc_url_raw($redirect);
+    if (!is_null($success_url)) {
+      $args['success_url'] = esc_url_raw($success_url);
     }
 
-    if (!is_null($cancel)) {
-      $args['cancel_url'] = esc_url_raw($cancel);
+    if (!is_null($cancel_url)) {
+      $args['cancel_url'] = esc_url_raw($cancel_url);
     }
 
-    if (!is_null($webhook_url)) {
-      $args['webhook_url'] = esc_url_raw($webhook_url);
+    if (!is_null($ipn_url)) {
+      $args['ipn_url'] = esc_url_raw($ipn_url);
     }
 
-    $args['return_type'] = 'GET';
+    $args['ipn_method'] = $ipn_method;
 
     return $args;
   }
